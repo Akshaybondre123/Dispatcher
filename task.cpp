@@ -1,43 +1,41 @@
 #include <iostream>
-#include <vector>
 #include <string>
 #include <cstring>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <sys/select.h>
 #include <ctime>
-#include <cerrno>
 #include <iomanip>
 #include <sstream>
 
-constexpr int MAX_WORKERS_PER_TYPE = 10;
-constexpr int MAX_WORKER_TYPES = 5;
-constexpr int BUF_SIZE = 256;
+constexpr int Mwor = 10;
+constexpr int TotalWorker = 5;
+constexpr int messageSiz = 256;
 
-struct WorkerType {
-    int type;
-    int count;
-    int pipes_to_worker[MAX_WORKERS_PER_TYPE][2];
-    int pipes_from_worker[MAX_WORKERS_PER_TYPE][2];
-    int current_worker;
+struct W {
+    int WorkT;
+    int TotalW;
+    int cmdPipe[Mwor][2];
+    int statPipe[Mwor][2];
+    int NextW;
 };
 
-WorkerType workers[MAX_WORKER_TYPES + 1];
-int worker_counts[MAX_WORKER_TYPES + 1] = {0};
+W AllW[TotalWorker + 1];
+int Wcount[TotalWorker + 1] = {0};
 
-std::string get_current_time() {
+std::string currTime() {
     time_t now = time(nullptr);
-    struct tm *tm_now = localtime(&now);
+    struct tm *tm = localtime(&now);
     std::ostringstream oss;
-    oss << std::put_time(tm_now, "[%a %b %d %H:%M:%S %Y]");
+    oss << std::put_time(tm, "[%a %b %d %H:%M:%S %Y]");
     return oss.str();
 }
 
-void create_worker(int type, int index) {
-    int to_worker[2];
-    int from_worker[2];
+void makeW(int T, int N) {
+    int toW[2];
+    int fromW[2];
     
-    if (pipe(to_worker) == -1 || pipe(from_worker) == -1) {
+    if (pipe(toW) == -1 || pipe(fromW) == -1) {
         perror("pipe");
         exit(EXIT_FAILURE);
     }
@@ -49,150 +47,151 @@ void create_worker(int type, int index) {
     }
     
     if (pid == 0) {
-        close(to_worker[1]);
-        close(from_worker[0]);
+        close(toW[1]);
+        close(fromW[0]);
         
-        char buf[BUF_SIZE];
+        char buf[messageSiz];
         while (true) {
-            ssize_t n = read(to_worker[0], buf, BUF_SIZE);
+            ssize_t n = read(toW[0], buf, messageSiz);
             if (n <= 0) {
-                if (n == -1) perror("worker read");
+                if (n == -1) perror("read");
                 break;
             }
             
             buf[n] = '\0';
-            int duration = atoi(buf);
+            int dur = atoi(buf);
             
-            std::cout << get_current_time() << " Worker " << type << "-" << index 
-                      << ": Starting job (duration: " << duration << " seconds)\n";
+            std::cout << currTime() << " Worker " << T << "-" << N 
+                      << ": Starting job (duration: " << dur << " seconds)\n";
             
-            sleep(duration);
+            sleep(dur);
             
-            std::cout << get_current_time() << " Worker " << type << "-" << index << ": Job completed\n";
+            std::cout << currTime() << " Worker " << T << "-" << N << ": Job completed\n";
             
-            write(from_worker[1], "done", 4);
+            write(fromW[1], "done", 4);
         }
         
-        close(to_worker[0]);
-        close(from_worker[1]);
+        close(toW[0]);
+        close(fromW[1]);
         exit(EXIT_SUCCESS);
     } else {
-        close(to_worker[0]);
-        close(from_worker[1]);
+        close(toW[0]);
+        close(fromW[1]);
         
-        workers[type].pipes_to_worker[index][0] = to_worker[0];
-        workers[type].pipes_to_worker[index][1] = to_worker[1];
-        workers[type].pipes_from_worker[index][0] = from_worker[0];
-        workers[type].pipes_from_worker[index][1] = from_worker[1];
+        AllW[T].cmdPipe[N][0] = toW[0];
+        AllW[T].cmdPipe[N][1] = toW[1];
+        AllW[T].statPipe[N][0] = fromW[0];
+        AllW[T].statPipe[N][1] = fromW[1];
     }
 }
 
-void setup_workers() {
-    for (int i = 1; i <= MAX_WORKER_TYPES; i++) {
-        workers[i].type = i;
-        workers[i].count = 0;
-        workers[i].current_worker = 0;
+void setup() {
+    for (int i = 1; i <= TotalWorker; i++) {
+        AllW[i].WorkT = i;
+        AllW[i].TotalW = 0;
+        AllW[i].NextW = 0;
     }
     
-    std::cout << get_current_time() << " Reading worker configuration...\n";
+    std::cout << currTime() << " Starting job management system...\n";
+    std::cout << currTime() << " Reading worker configuration...\n";
     
-    for (int i = 0; i < MAX_WORKER_TYPES; i++) {
-        int type, count;
-        if (!(std::cin >> type >> count)) {
+    for (int i = 0; i < TotalWorker; i++) {
+        int T, C;
+        if (!(std::cin >> T >> C)) {
             std::cerr << "Invalid worker configuration\n";
             exit(EXIT_FAILURE);
         }
         
-        if (type < 1 || type > MAX_WORKER_TYPES) {
-            std::cerr << "Invalid worker type: " << type << " (must be 1-5)\n";
+        if (T < 1 || T > TotalWorker) {
+            std::cerr << "Invalid worker type: " << T << " (must be 1-5)\n";
             exit(EXIT_FAILURE);
         }
         
-        if (count < 1 || count > MAX_WORKERS_PER_TYPE) {
-            std::cerr << "Invalid worker count: " << count << " for type " << type 
-                      << " (must be 1-" << MAX_WORKERS_PER_TYPE << ")\n";
+        if (C < 1 || C > Mwor) {
+            std::cerr << "Invalid worker count: " << C << " for type " << T 
+                      << " (must be 1-" << Mwor << ")\n";
             exit(EXIT_FAILURE);
         }
         
-        workers[type].count = count;
-        worker_counts[type] = count;
+        AllW[T].TotalW = C;
+        Wcount[T] = C;
         
-        std::cout << get_current_time() << " Creating " << count << " workers of type " << type << "...\n";
+        std::cout << currTime() << " Creating " << C << " workers of type " << T << "...\n";
         
-        for (int j = 0; j < count; j++) {
-            create_worker(type, j);
+        for (int j = 0; j < C; j++) {
+            makeW(T, j);
         }
     }
     
-    std::cout << get_current_time() << " Worker configuration complete. Ready to accept jobs.\n";
+    std::cout << currTime() << " Worker configuration complete. Ready to accept jobs.\n";
 }
 
-void distribute_jobs() {
-    fd_set read_fds;
-    int max_fd = 0;
+void run() {
+    fd_set fds;
+    int maxfd = 0;
     
-    FD_ZERO(&read_fds);
-    FD_SET(STDIN_FILENO, &read_fds);
-    max_fd = STDIN_FILENO;
+    FD_ZERO(&fds);
+    FD_SET(STDIN_FILENO, &fds);
+    maxfd = STDIN_FILENO;
     
-    for (int type = 1; type <= MAX_WORKER_TYPES; type++) {
-        for (int i = 0; i < workers[type].count; i++) {
-            int fd = workers[type].pipes_from_worker[i][0];
-            FD_SET(fd, &read_fds);
-            if (fd > max_fd) max_fd = fd;
+    for (int T = 1; T <= TotalWorker; T++) {
+        for (int i = 0; i < AllW[T].TotalW; i++) {
+            int fd = AllW[T].statPipe[i][0];
+            FD_SET(fd, &fds);
+            if (fd > maxfd) maxfd = fd;
         }
     }
     
     while (true) {
-        fd_set tmp_fds = read_fds;
-        int activity = select(max_fd + 1, &tmp_fds, nullptr, nullptr, nullptr);
+        fd_set tmp = fds;
+        int res = select(maxfd + 1, &tmp, nullptr, nullptr, nullptr);
         
-        if (activity < 0) {
+        if (res < 0) {
             perror("select");
             exit(EXIT_FAILURE);
         }
         
-        if (FD_ISSET(STDIN_FILENO, &tmp_fds)) {
-            int job_type, duration;
-            if (!(std::cin >> job_type >> duration)) {
-                std::cout << get_current_time() << " End of job input received. Waiting for workers to finish...\n";
+        if (FD_ISSET(STDIN_FILENO, &tmp)) {
+            int JT, JD;
+            if (!(std::cin >> JT >> JD)) {
+                std::cout << currTime() << " End of job input received. Waiting for workers to finish...\n";
                 break;
             }
             
-            if (job_type < 1 || job_type > MAX_WORKER_TYPES) {
-                std::cerr << get_current_time() << " Error: Invalid job type: " << job_type << " (must be 1-5)\n";
+            if (JT < 1 || JT > TotalWorker) {
+                std::cerr << currTime() << " Error: Invalid job type: " << JT << " (must be 1-5)\n";
                 continue;
             }
             
-            if (duration < 1 || duration > 10) {
-                std::cerr << get_current_time() << " Error: Invalid job duration: " << duration << " (must be 1-10)\n";
+            if (JD < 1 || JD > 10) {
+                std::cerr << currTime() << " Error: Invalid job duration: " << JD << " (must be 1-10)\n";
                 continue;
             }
             
-            if (workers[job_type].count == 0) {
-                std::cerr << get_current_time() << " Error: No workers available for job type " << job_type << "\n";
+            if (AllW[JT].TotalW == 0) {
+                std::cerr << currTime() << " Error: No workers available for job type " << JT << "\n";
                 continue;
             }
             
-            int worker_index = workers[job_type].current_worker;
-            workers[job_type].current_worker = (workers[job_type].current_worker + 1) % workers[job_type].count;
+            int WN = AllW[JT].NextW;
+            AllW[JT].NextW = (AllW[JT].NextW + 1) % AllW[JT].TotalW;
             
-            char buf[BUF_SIZE];
-            snprintf(buf, BUF_SIZE, "%d", duration);
-            write(workers[job_type].pipes_to_worker[worker_index][1], buf, strlen(buf));
+            char buf[messageSiz];
+            snprintf(buf, messageSiz, "%d", JD);
+            write(AllW[JT].cmdPipe[WN][1], buf, strlen(buf));
             
-            std::cout << get_current_time() << " Dispatched job type " << job_type << " (duration: " << duration 
-                      << ") to worker " << job_type << "-" << worker_index << "\n";
+            std::cout << currTime() << " Dispatched job type " << JT << " (duration: " << JD 
+                      << ") to worker " << JT << "-" << WN << "\n";
         }
         
-        for (int type = 1; type <= MAX_WORKER_TYPES; type++) {
-            for (int i = 0; i < workers[type].count; i++) {
-                int fd = workers[type].pipes_from_worker[i][0];
-                if (FD_ISSET(fd, &tmp_fds)) {
+        for (int T = 1; T <= TotalWorker; T++) {
+            for (int i = 0; i < AllW[T].TotalW; i++) {
+                int fd = AllW[T].statPipe[i][0];
+                if (FD_ISSET(fd, &tmp)) {
                     char buf[5];
                     ssize_t n = read(fd, buf, sizeof(buf));
                     if (n > 0) {
-                        // Worker is ready for a new job
+                        // Worker ready for new job
                     }
                 }
             }
@@ -200,25 +199,25 @@ void distribute_jobs() {
     }
 }
 
-void cleanup() {
-    for (int type = 1; type <= MAX_WORKER_TYPES; type++) {
-        for (int i = 0; i < workers[type].count; i++) {
-            close(workers[type].pipes_to_worker[i][1]);
-            close(workers[type].pipes_from_worker[i][0]);
+void clean() {
+    for (int T = 1; T <= TotalWorker; T++) {
+        for (int i = 0; i < AllW[T].TotalW; i++) {
+            close(AllW[T].cmdPipe[i][1]);
+            close(AllW[T].statPipe[i][0]);
         }
     }
     
     while (wait(nullptr) > 0);
     
-    std::cout << get_current_time() << " All workers have finished. Exiting.\n";
+    std::cout << currTime() << " All workers finished. System shutdown complete.\n";
 }
 
 int main() {
-    std::cout << get_current_time() << " Starting job dispatcher system...\n";
+    std::cout << currTime() << " Starting job management system...\n";
     
-    setup_workers();
-    distribute_jobs();
-    cleanup();
+    setup();
+    run();
+    clean();
     
     return 0;
 }
